@@ -1,4 +1,35 @@
-/******************  LIBRARY SECTION *************************************/
+/******************************************************************************************************************************************************** 
+ *  Hydroponics_IoT_MQTT.ino
+ *  
+ *  This is a Sketch that reads data from a hydroponics system using water level sensors, water temperature, TDS (total Dissolved Solids),
+ *  PH Sensor, ambient air temperature, humidity and barometric pressure as well as light brightness.  This data is sent via MQTT to a data collector 
+ *  and can also be displayed on a OLED screen.  There is also an indicator LED that blinks based on what is needed.
+ *  
+ *  Be sure to set the serial monitor to 115,200 to view the debug output
+ *  
+ *  Change Log:
+ *    03/08/2021 - Initial Release
+ *    
+ *  Copyright:
+ *    Copyright 2021 Techtactile, LLC
+ *    
+ *    Permission is hereby granted, for no charge, to anyone who has a copy of this software and any associated documentation file
+ *    from here forward refferences as "The Software", to use or modify the software without limitation to use, copy, modifym merge, or
+ *    publish subject to the following conditions:
+ *    
+ *    The above copyright notice and this permission notice shall be included in all copies or substantial portions of the software.
+ *    
+ *  Warranty:
+ *    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, INCLUDING EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+ *    WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRIDGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ *    HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *    
+ *******************************************************************************************************************************************************/
+
+//*************************************************************************
+//******************  LIBRARY SECTION *************************************
+//*************************************************************************
 
 #include <PubSubClient.h>         //https://github.com/knolleary/pubsubclient
 #include <ESP8266WiFi.h>          //if you get an error here you need to install the ESP8266 board manager 
@@ -13,35 +44,46 @@
 #include <Adafruit_SSD1306.h>
 
 
+//****************************************************************************
+//******************  REQUIRED SETTINGS  *************************************
+//****************************************************************************
+
+// *** WI-FI SETTINGS ***
+
 #define USER_SSID                 "hahn-2g"
 #define USER_PASSWORD             "11ab3f4ef3"
+
+// *** MQTT SETTINGS ***
 
 #define USER_MQTT_SERVER          "10.232.0.204"
 #define USER_MQTT_PORT            1883
 #define USER_MQTT_USERNAME        "mqtt"
 #define USER_MQTT_PASSWORD        "mqtt"
-#define USER_MQTT_CLIENT_NAME     "Weatherkit-d1"           //used to define MQTT topics, MQTT Client ID, and ArduinoOTA
-#define USER_MQTT_TEMPC            USER_MQTT_CLIENT_NAME"/tempc"
-#define USER_MQTT_TEMPF            USER_MQTT_CLIENT_NAME"/tempf"
-#define USER_MQTT_HUMIDITY         USER_MQTT_CLIENT_NAME"/humidity"
-#define USER_MQTT_PRESSURE_HPA     USER_MQTT_CLIENT_NAME"/pressure_HPA"
-#define USER_MQTT_PRESSURE_inHG    USER_MQTT_CLIENT_NAME"/pressure_inHG"
-#define USER_MQTT_BME_STATUS       USER_MQTT_CLIENT_NAME"/bmestatus"
-#define USER_MQTT_DISPLAY_STATUS   USER_MQTT_CLIENT_NAME"/displaystatus"
+#define USER_MQTT_CLIENT_NAME     "HydroPonics-1"           //used to define MQTT topics, MQTT Client ID, and ArduinoOTA
 
-#define DEBUG false
+// *** DEBUG MODE ON ***
+
+#define DEBUG     true
+
+// *** OLED SCREEN SETTINGS ***
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 
-#define SCREEN_DEFAULT_TEXT_SIZE 2
+#define SCREEN_DEFAULT_TEXT_SIZE 1
 #define SCREEN_DEFAULT_TEXT_COLOR WHITE
 
-#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
 
 /***********************  WIFI AND MQTT SETUP *****************************/
 /***********************  DON'T CHANGE THIS INFO *****************************/
+
+#define SENSOR_1_PIN  3
+#define SENSOR_2_PIN  4
+#define SENSOR_3_PIN  5
+#define SENSOR_4_PIN  6
+#define ONE_WIRE      7
+#define ATTENTION_LED 8
 
 const char* ssid = USER_SSID ; 
 const char* password = USER_PASSWORD ;
@@ -51,7 +93,22 @@ const char *mqtt_user = USER_MQTT_USERNAME ;
 const char *mqtt_pass = USER_MQTT_PASSWORD ;
 const char *mqtt_client_name = USER_MQTT_CLIENT_NAME ; 
 
-/*****************  DEFINE JSON SIZE *************************************/
+#define USER_MQTT_TEMPC            USER_MQTT_CLIENT_NAME"/tempc"
+#define USER_MQTT_TEMPF            USER_MQTT_CLIENT_NAME"/tempf"
+#define USER_MQTT_HUMIDITY         USER_MQTT_CLIENT_NAME"/humidity"
+#define USER_MQTT_PRESSURE_HPA     USER_MQTT_CLIENT_NAME"/pressure_HPA"
+#define USER_MQTT_PRESSURE_inHG    USER_MQTT_CLIENT_NAME"/pressure_inHG"
+#define USER_MQTT_BME_STATUS       USER_MQTT_CLIENT_NAME"/bmestatus"
+#define USER_MQTT_DISPLAY_STATUS   USER_MQTT_CLIENT_NAME"/displaystatus"
+#define USER_MQTT_SENSOR_1         USER_MQTT_CLIENT_NAME"/sensor1"
+#define USER_MQTT_SENSOR_2         USER_MQTT_CLIENT_NAME"/sensor2"
+#define USER_MQTT_SENSOR_3         USER_MQTT_CLIENT_NAME"/sensor3"
+#define USER_MQTT_SENSOR_4         USER_MQTT_CLIENT_NAME"/sensor4"
+#define USER_MQTT_A0_RAW           USER_MQTT_CLIENT_NAME"/A0_raw"
+
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+// *****************  DEFINE JSON SIZE *************************************
 
 const int capacity = JSON_OBJECT_SIZE(3) + 6 * JSON_OBJECT_SIZE(1);
 StaticJsonDocument<capacity> doc;
@@ -71,7 +128,7 @@ bool missingDisplay = false;
 
 char charPayload[50];
 int wakeDelay = 1000;
-int sendDelay = 60000;
+int sendDelay = 10000;
 int lastSendMilli = 0;
 
 float temp;
@@ -235,6 +292,9 @@ void sendStats()
 {
   String msg;
   String displayString;
+  unsigned int raw=0;
+  float volt=0.0;
+  float adjustment;
 
   // Check to make sure a BME280 was detected before attempting to read values
   if (!missingBME) {
@@ -245,13 +305,14 @@ void sendStats()
     temp = bme.readTemperature();
     hum = bme.readHumidity();
     pres = bme.readPressure()/100.0F;
-    
 
     if (DEBUG) {
       Serial.println(temp);
       Serial.println(hum);
       Serial.println(pres);
       Serial.println((pres * .03));
+      Serial.println(raw);
+      Serial.println(volt);
     }
         
     msg = String(temp);
@@ -283,8 +344,31 @@ void sendStats()
     client.publish(USER_MQTT_BME_STATUS, charPayload);
   }
 
+  // Read sensors
+  raw = analogRead(A0);
+
+  msg = String(raw);
+  msg.toCharArray(charPayload, msg.length() + 1);
+  client.publish(USER_MQTT_A0_RAW, charPayload);
+    
+  msg = String(digitalRead(SENSOR_1_PIN));
+  msg.toCharArray(charPayload, msg.length() + 1);
+  client.publish(USER_MQTT_SENSOR_1, charPayload);
+
+  msg = String(digitalRead(SENSOR_2_PIN));
+  msg.toCharArray(charPayload, msg.length() + 1);
+  client.publish(USER_MQTT_SENSOR_2, charPayload);
+
+  msg = String(digitalRead(SENSOR_3_PIN));
+  msg.toCharArray(charPayload, msg.length() + 1);
+  client.publish(USER_MQTT_SENSOR_3, charPayload);
+
+  msg = String(digitalRead(SENSOR_4_PIN));
+  msg.toCharArray(charPayload, msg.length() + 1);
+  client.publish(USER_MQTT_SENSOR_4, charPayload);
+
   if (!missingDisplay) {
-    displayString = "T:" + String(temp) + " c \nH:" + String(hum) + " % \nP:" + String((pres * .03)) + " in";
+    displayString = "T:" + String(temp) + " c \nH:" + String(hum) + " % \nP:" + String((pres * .03)) + " in\nD2:" + String(digitalRead(D2)) + " A0:" + String(raw);
     displayText(displayString);
   } else {
     msg = String("No Display Detected!");
@@ -323,6 +407,10 @@ void setup()
     display.clearDisplay();
     display.display();
   }
+
+   pinMode(A0, INPUT);
+   pinMode(D2, INPUT_PULLUP);
+  
 }
 
 void loop() 
@@ -338,10 +426,10 @@ void loop()
     if (millis() >= (lastSendMilli + sendDelay)) {
       sendStats();
       lastSendMilli = millis();
-      //Serial.println("Going To Sleep");
-      //ESP.deepSleep(10e6);
-      //Serial.println("Awake");
-      //setup_wifi();
+    //  Serial.println("Going To Sleep");
+    //  ESP.deepSleep(60e6);
+    //  Serial.println("Awake");
+    //  setup_wifi();
     }
   }
 }
